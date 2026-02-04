@@ -30,6 +30,7 @@ export default function ResultPage() {
   const handlePrev = () => navigate("/AddressPage");
   const pdfRef = useRef(null);
 
+
   // 요약정보 
   const summary = result?.summary ?? null;
   //실제 금액 계산의 근거
@@ -182,7 +183,8 @@ export default function ResultPage() {
         firstImageFile: room.images?.[0]?.file ?? null,
       };
     });
-  }, [rooms, analysisByRoom]);
+    }, [rooms, analysisByRoom]);
+
 
   const totalItemCount = useMemo(() => {
     return roomSummaries.reduce((sum, r) => sum + r.totalCount, 0);

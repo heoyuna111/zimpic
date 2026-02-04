@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useEffect, useCallback } from "react";
+import React, { useMemo, useRef, useEffect, useCallback, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Html, Sky, ContactShadows, Environment } from "@react-three/drei";
 // logic 분리된 것들
@@ -6,6 +6,9 @@ import { SCALE, TRUCK_PRESET } from "./logic/truckPreset";
 import { toNumber, itemCbm, hash01 } from "./logic/packingUtils";
 import { simplePack, splitItemsByTruckLoad } from "./logic/simplePack";
 import { packWithBinPacking3D_MultiTry } from "./logic/binPacking";
+// 드래그앤드롭용(유나)
+import * as THREE from "three";
+
 
 /* 환경/비주얼 컴포넌트 */
 function DecorationTree({ position, scale = 1 }) {
@@ -299,150 +302,153 @@ function CameraPreset({ controlsRef, target, offset = [2.4, 3.2, 8.5], onceKey }
   return null;
 }
 
-function FallingBox({ p, startY, delaySec, durationSec = 0.6, zOffsetCm = 0, yOffsetCm = 0, xOffsetCm = 0, worldOffset, onLand }) {
+function FallingBox({ p, zOffsetCm, yOffsetCm, xOffsetCm, worldOffset, controlsRef, onDragEnd, externalRef,setSelectedMesh, onSelect, isSelected }) {
   const meshRef = useRef();
-  const tRef = useRef(0);
-  const doneRef = useRef(false);
-  const landedRef = useRef(false);
-  const seedRef = useRef(null);
-
-  useEffect(() => {
-    if (!meshRef.current) return;
-    if (!seedRef.current) {
-      // 시각 효과용 랜덤 (배치/겹침과 무관)
-      const sx = (Math.random() - 0.5) * 85;
-      const sz = (Math.random() - 0.5) * 120;
-      const rx = (Math.random() - 0.5) * 1.8;
-      const ry = (Math.random() - 0.5) * 1.8;
-      const rz = (Math.random() - 0.5) * 1.8;
-      const spin = 10 + Math.random() * 14;
-      seedRef.current = { sx, sz, rx, ry, rz, spin };
-    }
-    const seed = seedRef.current;
-
-    meshRef.current.position.set(
-      (worldOffset.x + xOffsetCm + p.pos.x + seed.sx) * SCALE,
-      startY * SCALE,
-      (worldOffset.z + p.pos.z + zOffsetCm + seed.sz) * SCALE
-    );
-    meshRef.current.rotation.set(seed.rx, seed.ry, seed.rz);
-  }, [p.pos.x, p.pos.z, startY, zOffsetCm, xOffsetCm, worldOffset.x, worldOffset.z]);
-
-  useFrame((_, delta) => {
-    if (!meshRef.current) return;
-    if (doneRef.current) return;
-
-    const seed = seedRef.current;
-    tRef.current += delta;
-    if (tRef.current < delaySec) return;
-
-    const localT = (tRef.current - delaySec) / durationSec;
-    if (localT >= 1) {
-      meshRef.current.position.set(
-        (worldOffset.x + xOffsetCm + p.pos.x) * SCALE,
-        (p.pos.y + yOffsetCm) * SCALE,
-        (worldOffset.z + p.pos.z + zOffsetCm) * SCALE
-      );
-      meshRef.current.rotation.set(0, 0, 0);
-      doneRef.current = true;
-      if (!landedRef.current) {
-        landedRef.current = true;
-        onLand && onLand();
-      }
-      return;
-    }
-
-    const t = Math.max(0, Math.min(1, localT));
-    const e = easeOutBack(t);
-    const ePos = Math.max(0, Math.min(1, e));
-
-    const x = worldOffset.x + xOffsetCm + p.pos.x + seed.sx * (1 - t);
-    const z = worldOffset.z + p.pos.z + zOffsetCm + seed.sz * (1 - t);
-    const yBase = startY + (p.pos.y + yOffsetCm - startY) * ePos;
-    const bounce = Math.sin(t * Math.PI) * (1 - t) * 7;
-    const y = yBase + bounce;
-
-    meshRef.current.position.set(x * SCALE, y * SCALE, z * SCALE);
-
-    const spinT = 1 - t;
-    meshRef.current.rotation.set(
-      seed.rx * spinT + Math.sin(t * seed.spin) * 0.2 * spinT,
-      seed.ry * spinT + Math.cos(t * seed.spin) * 0.2 * spinT,
-      seed.rz * spinT + Math.sin(t * seed.spin * 0.8) * 0.2 * spinT
-    );
-  });
+  const [isDragging, setIsDragging] = useState(false);
+  const lastIntersect = useRef(new THREE.Vector3());
 
   const colors = ["#e57373", "#81c784", "#64b5f6", "#ffd54f", "#ba68c8", "#4db6ac"];
   const overflowColor = "#ff5252";
-  const colorIndex = String(p.id).split("").reduce((acc, ch) => acc + ch.charCodeAt(0), 0) % colors.length;
+  const colorIndex = useMemo(() => 
+    String(p.id).split("").reduce((acc, ch) => acc + ch.charCodeAt(0), 0) % colors.length
+  , [p.id]);
 
-  const isBox = p._isBoxBundle || String(p.id).startsWith("box-") || String(p.name).includes("이사 박스");
+  // 초기 위치 계산
+  const initialPos = useMemo(() => [
+    (worldOffset.x + xOffsetCm + p.pos.x) * SCALE,
+    (p.pos.y + yOffsetCm) * SCALE,
+    (worldOffset.z + p.pos.z + zOffsetCm) * SCALE
+  ], [p.pos, worldOffset, xOffsetCm, yOffsetCm, zOffsetCm]);
+
+  useEffect(() => {
+    if (meshRef.current && externalRef) externalRef(meshRef.current);
+  }, [externalRef]);
+
+  // 2. 드래그 로직 (useFrame 내부에서 안전하게 처리)
+  useFrame((state) => {
+    if (!isDragging || !meshRef.current) return;
+
+    // 1. 박스의 현재 월드 좌표를 가져옵니다.
+    const worldPos = new THREE.Vector3();
+    meshRef.current.getWorldPosition(worldPos);
+
+    // 2. 바닥 평면(Y=worldPos.y)을 생성합니다. 
+    // 평면의 법선 벡터는 위(0, 1, 0)를 향해야 합니다.
+    const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -worldPos.y);
+    const targetPoint = new THREE.Vector3();
+
+    // 3. 마우스 광선과 평면이 만나는 점을 계산합니다.
+    if (state.raycaster.ray.intersectPlane(floorPlane, targetPoint)) {
+      // 4. 이 '타겟 포인트(월드)'를 부모(TruckGroup) 내부의 로컬 좌표로 변환합니다.
+      const localPos = meshRef.current.parent.worldToLocal(targetPoint.clone());
+
+      // 5. 직접 X와 Z를 꽂아줍니다. (이때 Y는 고정)
+      // 만약 여기서도 안 움직인다면, state.raycaster 자체가 평면을 통과하고 있는 겁니다.
+      meshRef.current.position.set(localPos.x, meshRef.current.position.y, localPos.z);
+    }
+  });
 
   return (
-    <group>
-      <mesh ref={meshRef} castShadow receiveShadow>
-        <boxGeometry args={[p.w * SCALE, p.h * SCALE, p.d * SCALE]} />
-        <meshStandardMaterial color={p._overflow ? overflowColor : colors[colorIndex]} roughness={0.6} />
-      </mesh>
-
-      {!isBox && (
-        <Html
-          position={[
-            (worldOffset.x + xOffsetCm + p.pos.x) * SCALE,
-            (p.pos.y + yOffsetCm + p.h / 2 + 8) * SCALE,
-            (worldOffset.z + p.pos.z + zOffsetCm) * SCALE,
-          ]}
-          style={{
-            pointerEvents: "none",
-            transform: "translate(-50%, -50%)",
-            whiteSpace: "nowrap",
-            fontSize: "12px",
-            background: "rgba(255,255,255,0.85)",
-            padding: "2px 6px",
-            borderRadius: "6px",
-          }}
-        >
-          {p._overflow ? `⚠ ${p.name}` : p.name}
-        </Html>
-      )}
-    </group>
+    <mesh
+      ref={meshRef}
+      position={initialPos} // 기존 initialPos 로직 유지
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        // 부모에게 내가 선택되었다고 알림
+        if (onSelect) onSelect(meshRef.current, p.id); 
+        if (controlsRef?.current) controlsRef.current.enabled = false;
+      }}
+      onPointerUp={(e) => {
+        e.stopPropagation();
+        if (controlsRef?.current) controlsRef.current.enabled = true;
+        onDragEnd(p.id, meshRef.current);
+      }}
+    >
+      <boxGeometry args={[p.w * SCALE, p.h * SCALE, p.d * SCALE]} />
+      <meshStandardMaterial 
+        color={p._overflow ? "#ff5252" : colors[colorIndex]} 
+        transparent={p._overflow}
+        opacity={p._overflow ? 0.6 : 1} // 미적재 시 더 투명하게 해서 구분을 확실히
+        // ✨ 선택 시 시각적 피드백 (이중클릭 방지용)
+        emissive={isSelected ? "#ffffff" : "#000000"}
+        emissiveIntensity={isSelected ? 0.4 : 0}
+      />
+    </mesh>
   );
 }
 
-function TruckGroup({ tw, startY }) {
+function TruckGroup({ tw, startY, freeze, controlsRef, onDragEnd, meshRefs, onSelect, selectedId }) {
   const tr = tw.truck;
   const preset = tw.preset;
   const CAB_D = preset.cabD;
   const CHASSIS_H = preset.chassisH;
-  const pct = Math.round(toNumber(tr.loadPct, 0));
+
+  // 1. [상태 관리] 개별 박스의 상태를 유지하기 위해 localPlacements 사용
+  const [localPlacements, setLocalPlacements] = React.useState(tw.placements);
+  const groupRef = useRef();
+
+  // 2. [실시간 계산] 라벨에 표시될 숫자들
+  const overflowItems = localPlacements.filter(p => p._overflow);
+  const inTruckCount = localPlacements.length - overflowItems.length;
+  const displayPct = localPlacements.length > 0 
+    ? Math.round((inTruckCount / localPlacements.length) * 100) 
+    : 0;
+  const displayOverflow = overflowItems.length;
+
+  // 트럭이 -Math.PI / 2로 회전되어 있기 때문에, **로컬 Z축이 너비(W)**이고 **로컬 X축이 길이(D)**입니다. 이 기준이 명확해야 내외부를 인식합니다.
+  // 3. [핸들러] 드래그가 끝났을 때의 판정 로직
+  const handleDragEnd = useCallback((id, mesh) => {
+    if (!mesh || !groupRef.current) return;
+
+    // 1. 드래그가 끝난 박스의 로컬 좌표 가져오기
+    const localX = mesh.position.x;
+    const localZ = mesh.position.z;
+
+    // 2. 판정 기준값 (트럭의 -90도 회전 고려)
+    const halfW = (tr.w * SCALE) / 2;
+    const halfD = (tr.d * SCALE) / 2;
+    
+    // 트럭 적재함의 시작점과 중심점 계산 (X축이 트럭의 길이 방향임)
+    const bedStart = (preset.cabD + preset.bodyPaddingD / 2) * SCALE;
+    const bedCenter = bedStart + halfD;
+
+    // 3. 판정 로직
+    // Z축(너비): 중심(0)으로부터 halfW 안에 있는가?
+    const isInW = Math.abs(localZ) <= halfW;
+    // X축(길이): bedCenter로부터 halfD 안에 있는가?
+    const isInD = Math.abs(localX - bedCenter) <= halfD;
+    
+    const isInTruck = isInW && isInD;
+
+    // 4. 상태 업데이트
+    setLocalPlacements(prev => prev.map(box => 
+      box.id === id ? { ...box, _overflow: !isInTruck } : box
+    ));
+
+    // 원본 데이터(scene)에 반영하여 메인 전광판 숫자 갱신
+    const targetItem = tw.placements.find(p => p.id === id);
+    if (targetItem) targetItem._overflow = !isInTruck;
+    
+    if (onDragEnd) onDragEnd(); 
+  }, [tr, preset, tw.placements, onDragEnd]);
+
+  // 트럭 흔들림(애니메이션) 로직
+  const shakeY = useRef(0);
+  const shakeVelocity = useRef(0);
+  const handleLand = useCallback(() => { shakeVelocity.current = -20; }, []);
 
   const localWheelY = Math.max(7, CHASSIS_H - 2);
   const W_RADIUS = 14;
   const liftY = Math.max(0, W_RADIUS - localWheelY);
 
-  // 트럭 흔들림
-  const groupRef = useRef();
-  const shakeY = useRef(0);
-  const shakeVelocity = useRef(0);
-
-  const handleLand = useCallback(() => {
-    shakeVelocity.current = -20;
-  }, []);
-
   useFrame((_, delta) => {
-    if (!groupRef.current) return;
-
-    const k = 120;
-    const damp = 8;
-    const mass = 1.5;
-
+    if (freeze || !groupRef.current) return;
+    const k = 120; const damp = 8; const mass = 1.5;
     const force = -k * shakeY.current;
     const accel = force / mass;
-
     shakeVelocity.current += accel * delta;
     shakeVelocity.current -= shakeVelocity.current * damp * delta;
     shakeY.current += shakeVelocity.current * delta;
-
     groupRef.current.position.y = (liftY + shakeY.current) * SCALE;
     groupRef.current.rotation.set(shakeY.current * 0.01, -Math.PI / 2, 0);
   });
@@ -455,49 +461,31 @@ function TruckGroup({ tw, startY }) {
       rotation={[0, -Math.PI / 2, 0]}
     >
       <TruckShell
-        truck={tr}
-        cabD={CAB_D}
-        chassisH={CHASSIS_H}
-        bodyPaddingW={preset.bodyPaddingW}
-        bodyPaddingD={preset.bodyPaddingD}
-        bodyPaddingH={preset.bodyPaddingH}
+        truck={tr} cabD={CAB_D} chassisH={CHASSIS_H}
+        bodyPaddingW={preset.bodyPaddingW} bodyPaddingD={preset.bodyPaddingD} bodyPaddingH={preset.bodyPaddingH}
         worldOffset={{ x: 0, z: 0 }}
       />
 
       <Html
-        position={[
-          (0 + 55) * SCALE,
-          (CHASSIS_H + tr.h + 44) * SCALE,
-          (CAB_D * 0.25) * SCALE,
-        ]}
+        position={[(0 + 55) * SCALE, (CHASSIS_H + tr.h + 44) * SCALE, (CAB_D * 0.25) * SCALE]}
         style={{ pointerEvents: "none", transform: "translate(-50%, -50%)" }}
       >
-        <div
-          style={{
-            background: "rgba(0,0,0,0.75)",
-            color: "#fff",
-            padding: "4px 8px",
-            borderRadius: 999,
-            fontSize: 12,
-            fontWeight: 800,
-            letterSpacing: "0.02em",
-            boxShadow: "0 4px 10px rgba(0,0,0,0.25)",
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            whiteSpace: "nowrap",
-          }}
-        >
+        <div style={{
+          background: "rgba(0,0,0,0.75)", color: "#fff", padding: "4px 12px", borderRadius: 999,
+          fontSize: 12, fontWeight: 800, display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap"
+        }}>
           <span style={{ opacity: 0.75 }}>{preset.label}</span>
-          <span>적재율 {pct}%</span>
-          {tw.overflowCount > 0 && <span style={{ opacity: 0.9 }}>⚠ 못실음 {tw.overflowCount}</span>}
+          <span>적재율 {displayPct}%</span>
+          {displayOverflow > 0 && <span style={{ color: "#ff5252" }}> ⚠ 미적재 {displayOverflow}개</span>}
         </div>
       </Html>
 
-      {tw.placements.map((p) => (
+      {localPlacements.map((p) => (
         <FallingBox
-          key={`${tr.id}-${p.id}-${p._overflow ? "O" : "I"}`}
+          key={p.id}
           p={p}
+          onSelect={onSelect}
+          isSelected={selectedId === p.id}
           startY={startY}
           delaySec={p._delayJitter ?? 0}
           durationSec={0.5}
@@ -506,6 +494,10 @@ function TruckGroup({ tw, startY }) {
           xOffsetCm={preset.bodyPaddingW / 2}
           worldOffset={{ x: 0, z: 0 }}
           onLand={handleLand}
+          freeze={freeze}
+          onDragEnd={handleDragEnd} 
+          controlsRef={controlsRef}
+          externalRef={(el) => { if (el) meshRefs.current[p.id] = el; }}
         />
       ))}
     </group>
@@ -515,8 +507,25 @@ function TruckGroup({ tw, startY }) {
 /* 메인 */
 export default function TruckLoad3D({ result }) {
   const controlsRef = useRef();
+  // ---------------------------------------------------드래그앤드롭 유나 추가
+  const meshRefs = useRef({});
+  const [truckLoads, setTruckLoads] = useState([]); // 초기값 빈 배열
+  // TruckLoad3D 내부
+  const [selectedMesh, setSelectedMesh] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
 
-  /* ✅ 서버에서 준 트럭 플랜(result.summary.truck_plan)으로 트럭 구성 */
+  // 📍 선택 함수 (아이디와 메쉬를 동시에 저장)
+  const handleSelect = useCallback((mesh, id) => {
+    setSelectedMesh(mesh);
+    setSelectedId(id);
+  }, []);
+
+  const btnStyle = {
+    width: 50, height: 50, fontSize: 20, cursor: "pointer",
+    backgroundColor: "rgba(255,255,255,0.9)", border: "none", borderRadius: 8
+  };
+
+  // 트럭을 먼저 불러온 뒤
   const trucks = useMemo(() => {
     const plan = result?.summary?.truck_plan ?? [];
     const expanded = [];
@@ -550,9 +559,7 @@ export default function TruckLoad3D({ result }) {
       : [{ id: "5T-0-0", type: "5T", preset: TRUCK_PRESET["5T"], w: 230, d: 620, h: 230, loadCbm: 0, capacityCbm: 0, loadPct: 0 }];
   }, [result]);
 
-  const maxTruckH = useMemo(() => Math.max(...trucks.map((t) => t.h)), [trucks]);
-
-  /* ✅ 서버에서 준 짐 리스트(result.rooms[].items[]) + 박스(result.summary.box/boxes_count) */
+  // 이후에 짐 리스트 가져옴
   const items = useMemo(() => {
     const roomItems = (result?.rooms ?? []).flatMap((r) => r.items ?? []);
     const boxSpec = result?.summary?.box;
@@ -576,6 +583,7 @@ export default function TruckLoad3D({ result }) {
       .sort((a, b) => (b._vol ?? 0) - (a._vol ?? 0));
   }, [result]);
 
+// 이후에 scene 정의(trucks + items = scene)
   const scene = useMemo(() => {
     const { buckets, remainder } = splitItemsByTruckLoad(items, trucks);
     const GAP_TRUCK = 850;
@@ -653,50 +661,184 @@ export default function TruckLoad3D({ result }) {
     return { trucks: out, overflowTotal, globalRemainderPlacements };
   }, [items, trucks]);
 
-  // 네가 원한 “초기 카메라 시점”
+  // 부피가 큰 변수들 / 이는 scene 이후에 필요함
+  const maxTruckH = useMemo(() => Math.max(...trucks.map((t) => t.h)), [trucks]);
   const cameraTarget = useMemo(() => [-3, 1.2, 1.4], []);
   const startY = useMemo(() => maxTruckH + 10 + 220, [maxTruckH]);
 
+  // TruckLoad3D.jsx 내부 checkTruckPlacement, 콜백 함수 드래그 판정 로직
+  // TruckLoad3D.jsx 내부의 기존 checkTruckPlacement를 이 코드로 교체하세요.
+  const checkTruckPlacement = useCallback(() => {
+    if (!scene) return;
+
+    // 1. 각 트럭 그룹(TruckGroup) 내부에서 이미 계산된 _overflow 상태를 기반으로 
+    //    메인 전광판에 표시할 숫자(newTruckLoads)를 다시 집계합니다.
+    const newTruckLoads = scene.trucks.map(tw => {
+      const { truck, placements } = tw;
+      
+      // TruckGroup이 업데이트한 개별 박스의 _overflow 상태를 체크
+      const overflowCount = placements.filter(p => p._overflow === true).length;
+      const insideCount = placements.length - overflowCount;
+
+      return {
+        truckId: truck.id,
+        // 실시간 적재율 계산
+        loadPct: placements.length > 0 ? Math.round((insideCount / placements.length) * 100) : 0,
+        overflowCount: overflowCount
+      };
+    });
+
+    // 2. 상태를 업데이트하여 화면 상단의 '⚠️ 트럭에 못 실은 짐' 숫자를 바꿉니다.
+    setTruckLoads(newTruckLoads);
+  }, [scene]);
+
+  // 버튼 클릭 시 상자 이동 함수
+  const moveBox = (direction) => {
+    if (!selectedMesh || !selectedId) return;
+    const STEP = 10 * SCALE; 
+
+    // 📍 화면 기준 좌표 보정
+    // Up/Down: 화면의 앞뒤 (Z축)
+    // Left/Right: 화면의 좌우 (X축)
+    if (direction === 'up')    selectedMesh.position.z -= STEP; // 화면 안쪽으로
+    if (direction === 'down')  selectedMesh.position.z += STEP; // 내 쪽으로
+    if (direction === 'left')  selectedMesh.position.x -= STEP; // 왼쪽으로
+    if (direction === 'right') selectedMesh.position.x += STEP; // 오른쪽으로
+
+    // 📍 실시간 판정 (트럭 회전 -90도 기준)
+    scene.trucks.forEach(tw => {
+      const target = tw.placements.find(p => p.id === selectedId);
+      if (target) {
+        const tr = tw.truck;
+        const preset = tw.preset;
+
+        // 트럭이 -90도 회전했으므로:
+        // 트럭의 너비(W)는 로컬 X축 판정
+        // 트럭의 길이(D)는 로컬 Z축 판정
+        const halfW = (tr.w * SCALE) / 2;
+        const halfD = (tr.d * SCALE) / 2;
+        
+        // 적재함 중심점 (트럭 쉘 모델링 기준)
+        const bedCenterZ = (preset.cabD + tr.d / 2) * SCALE;
+        const bedCenterX = (tr.w / 2) * SCALE;
+
+        // 현재 메쉬 위치와 적재함 중심 비교
+        const isInW = Math.abs(selectedMesh.position.x - bedCenterX) <= halfW;
+        const isInD = Math.abs(selectedMesh.position.z - bedCenterZ) <= halfD;
+        
+        // 상태 업데이트
+        target._overflow = !(isInW && isInD);
+      }
+    });
+
+    checkTruckPlacement(); 
+  };
+
+  // 실시간으로 미적재 합산
+  const currentTotalOverflow = useMemo(() => {
+    // 1. 각 트럭 내 박스들의 실시간 _overflow 합산
+    const truckOverflow = scene.trucks.reduce((acc, tw) => 
+      acc + tw.placements.filter(p => p._overflow).length, 0);
+    
+    // 2. 치수불가(globalRemainder) 박스들의 실시간 _overflow 합산
+    const remainderOverflow = scene.globalRemainderPlacements.filter(p => p._overflow).length;
+    
+    return truckOverflow + remainderOverflow;
+  }, [truckLoads, scene]);
+
+  // scene를 사용하는 상태 및 이펙트를 배치
+  const [placementsState, setPlacementsState] = useState([]);
+
+  // 초기 데이터 로드 시 state 설정
+  useEffect(() => {
+    if (scene.trucks.length > 0) {
+      // 모든 트럭의 placements를 하나로 관리하거나 트럭별로 관리
+      setPlacementsState(scene.trucks[0].placements);
+    }
+  }, [scene]);
+
+  // 짐의 상태를 업데이트하는 핸들러
+  const handleBoxMove = useCallback((boxId, isInTruck) => {
+    setPlacementsState(prev => prev.map(box => {
+      if (box.id === boxId) {
+        // 적재 상태(_overflow)와 이름 등을 변경
+        return { ...box, _overflow: !isInTruck };
+      }
+      return box;
+      }));
+  }, []);
+
+
   return (
     <div style={{ width: "100%", aspectRatio: "16 / 9", maxHeight: 320, minHeight: 220, borderRadius: 12, overflow: "hidden", background: "#81d4fa", position: "relative" }}>
+      
+      {/* ⚠️ 트럭에 못 실은 짐 안내 (기존 유지) */}
       {scene.overflowTotal > 0 && (
-        <div style={{ position: "absolute", top: 10, left: 10, zIndex: 2, background: "rgba(255,255,255,0.95)", border: "1px solid rgba(0,0,0,0.08)", borderRadius: 10, padding: "6px 10px", fontSize: 12, fontWeight: 900, color: "#d32f2f", boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
-          ⚠️ 트럭에 못 실은 짐(빨간색): {scene.overflowTotal}개
+        <div style={{ position: "absolute", top: 10, left: 10, zIndex: 2, background: "rgba(255,255,255,0.95)", border: "1px solid rgba(0,0,0,0.08)", borderRadius: 10, padding: "6px 10px", fontSize: 12, fontWeight: 900, color: "#d32f2f" }}>
+          ⚠️ 트럭에 못 실은 짐: {currentTotalOverflow}개
         </div>
       )}
 
-      <Canvas shadows camera={{ fov: 40, near: 0.5, far: 4000, position: [30, 20, 30] }} dpr={[1, 2]} style={{ width: "100%", height: "100%", display: "block" }}>
-        <CameraPreset controlsRef={controlsRef} target={cameraTarget} offset={[2.4, 3.2, 8.5]} onceKey={`${result?.estimate_id ?? "x"}-${trucks.length}-v3-noOverlap`} />
+      {/* 🕹️ 인형뽑기 컨트롤러 버튼 (Canvas 바깥에 배치) */}
+      {selectedMesh && (
+        <div style={{ position: "absolute", bottom: 15, left: "50%", transform: "translateX(-50%)", display: "grid", gridTemplateColumns: "repeat(3, 46px)", gap: "5px", zIndex: 100 }}>
+          <div /> <button onClick={() => moveBox('up')} style={btnStyle}>▲</button> <div />
+          <button onClick={() => moveBox('left')} style={btnStyle}>◀</button>
+          <button onClick={() => moveBox('down')} style={btnStyle}>▼</button>
+          <button onClick={() => moveBox('right')} style={btnStyle}>▶</button>
+        </div>
+      )}
 
+      <Canvas shadows camera={{ fov: 40, near: 0.5, far: 4000, position: [30, 20, 30] }} onPointerMissed={() =>{setSelectedMesh(null); setSelectedId(null);}}>
+        <CameraPreset controlsRef={controlsRef} target={cameraTarget} offset={[2.4, 3.2, 8.5]} onceKey={`${result?.estimate_id ?? "x"}-v3`} />
         <Sky sunPosition={[100, 50, 50]} turbidity={0.2} rayleigh={0.15} />
         <ambientLight intensity={0.8} />
-        <directionalLight position={[50, 150, 50]} intensity={1.8} castShadow shadow-mapSize-width={2048} shadow-mapSize-height={2048} shadow-bias={-0.0001} />
+        <directionalLight position={[50, 150, 50]} intensity={1.8} castShadow />
         <Environment preset="park" />
 
+        {/* 배경 환경 */}
         <group scale={[SCALE, SCALE, SCALE]}>
           <ResidentialEnvironment />
         </group>
 
-        {scene.trucks.map((tw) => (
-          <TruckGroup key={tw.truck.id} tw={tw} startY={startY} />
+        {/* 트럭들 */}
+        {scene.trucks.map(tw => (
+          <TruckGroup
+            key={tw.truck.id}
+            tw={tw}
+            startY={startY}
+            onDragEnd={checkTruckPlacement}
+            onSelect={handleSelect} //선택 함수 전달
+            selectedId={selectedId}
+            controlsRef={controlsRef}
+            meshRefs={meshRefs}
+          />
         ))}
 
+        {/* 나머지 짐들 */}
         {scene.globalRemainderPlacements.length > 0 && scene.trucks[0] && (() => {
-          const preset0 = scene.trucks[0].preset;
-          const liftY = Math.max(0, 14 - Math.max(7, preset0.chassisH - 2));
+  const tr0 = scene.trucks[0].truck;
+  const preset0 = scene.trucks[0].preset;
+  
           return (
-            <group position={[scene.trucks[0].worldOffset.x * SCALE, liftY * SCALE, scene.trucks[0].worldOffset.z * SCALE]} rotation={[0, -Math.PI / 2, 0]}>
-              {scene.globalRemainderPlacements.map((p, idx) => (
+            <group 
+              position={[scene.trucks[0].worldOffset.x * SCALE, 0, scene.trucks[0].worldOffset.z * SCALE]} 
+              rotation={[0, -Math.PI / 2, 0]}
+            >
+              {scene.globalRemainderPlacements.map((p) => (
                 <FallingBox
-                  key={`GLOBAL-${p.id}-${idx}`}
+                  key={`GLOBAL-${p.id}`}
                   p={p}
                   startY={startY}
-                  delaySec={0.2 + (p._delayJitter ?? 0)}
-                  durationSec={0.5}
-                  zOffsetCm={preset0.cabD}
+                  onSelect={setSelectedMesh}
+                  onDragEnd={checkTruckPlacement}
+                  controlsRef={controlsRef}
+                  // 📍 위치 계산을 위한 props 추가 (이게 빠져있었네요!)
+                  zOffsetCm={preset0.cabD + preset0.bodyPaddingD / 2}
                   yOffsetCm={preset0.chassisH}
                   xOffsetCm={preset0.bodyPaddingW / 2}
                   worldOffset={{ x: 0, z: 0 }}
+                  externalRef={(el) => { if (el) meshRefs.current[p.id] = el; }}
                 />
               ))}
             </group>
@@ -704,7 +846,7 @@ export default function TruckLoad3D({ result }) {
         })()}
 
         <ContactShadows position={[0, 0.1, 0]} opacity={0.6} scale={100} blur={2} far={4} color="#000" />
-        <OrbitControls ref={controlsRef} makeDefault minPolarAngle={0} maxPolarAngle={Math.PI / 2.05} />
+        <OrbitControls ref={controlsRef} makeDefault minPolarAngle={0} maxPolarAngle={Math.PI / 2.1} enablePan={false} />
       </Canvas>
     </div>
   );
