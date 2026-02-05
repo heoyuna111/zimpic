@@ -302,7 +302,7 @@ function CameraPreset({ controlsRef, target, offset = [2.4, 3.2, 8.5], onceKey }
   return null;
 }
 
-function FallingBox({ p, zOffsetCm, yOffsetCm, xOffsetCm, worldOffset, controlsRef, onDragEnd, externalRef,setSelectedMesh, onSelect, isSelected }) {
+function FallingBox({ p, zOffsetCm, yOffsetCm, xOffsetCm, worldOffset, onSelect, isSelected, onDragEnd, controlsRef, externalRef }) {
   const meshRef = useRef();
   const [isDragging, setIsDragging] = useState(false);
   const lastIntersect = useRef(new THREE.Vector3());
@@ -314,15 +314,23 @@ function FallingBox({ p, zOffsetCm, yOffsetCm, xOffsetCm, worldOffset, controlsR
   , [p.id]);
 
   // 초기 위치 계산
+  // 1. 초기 위치 계산 (기존 로직 그대로 변수만 선언)
   const initialPos = useMemo(() => [
-    (worldOffset.x + xOffsetCm + p.pos.x) * SCALE,
-    (p.pos.y + yOffsetCm) * SCALE,
-    (worldOffset.z + p.pos.z + zOffsetCm) * SCALE
-  ], [p.pos, worldOffset, xOffsetCm, yOffsetCm, zOffsetCm]);
+      (worldOffset.x + xOffsetCm + p.pos.x) * SCALE,
+      (p.pos.y + yOffsetCm) * SCALE,
+      (worldOffset.z + p.pos.z + zOffsetCm) * SCALE
+    ], [p.pos, worldOffset, xOffsetCm, yOffsetCm, zOffsetCm]);
 
-  useEffect(() => {
-    if (meshRef.current && externalRef) externalRef(meshRef.current);
-  }, [externalRef]);
+    // 2. ✨ 핵심: 리액트가 위치를 초기화하지 않도록 처음 한 번만 직접 꽂아줌
+    useEffect(() => {
+      if (meshRef.current) {
+        meshRef.current.position.set(...initialPos);
+      }
+    }, []); // 의존성 배열 비움 (마운트 시 딱 1번 실행)
+
+    useEffect(() => {
+      if (meshRef.current && externalRef) externalRef(meshRef.current);
+    }, [externalRef]);
 
   // 2. 드래그 로직 (useFrame 내부에서 안전하게 처리)
   useFrame((state) => {
@@ -333,37 +341,36 @@ function FallingBox({ p, zOffsetCm, yOffsetCm, xOffsetCm, worldOffset, controlsR
     meshRef.current.getWorldPosition(worldPos);
 
     // 2. 바닥 평면(Y=worldPos.y)을 생성합니다. 
-    // 평면의 법선 벡터는 위(0, 1, 0)를 향해야 합니다.
     const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -worldPos.y);
     const targetPoint = new THREE.Vector3();
 
     // 3. 마우스 광선과 평면이 만나는 점을 계산합니다.
     if (state.raycaster.ray.intersectPlane(floorPlane, targetPoint)) {
-      // 4. 이 '타겟 포인트(월드)'를 부모(TruckGroup) 내부의 로컬 좌표로 변환합니다.
       const localPos = meshRef.current.parent.worldToLocal(targetPoint.clone());
-
-      // 5. 직접 X와 Z를 꽂아줍니다. (이때 Y는 고정)
-      // 만약 여기서도 안 움직인다면, state.raycaster 자체가 평면을 통과하고 있는 겁니다.
       meshRef.current.position.set(localPos.x, meshRef.current.position.y, localPos.z);
     }
   });
 
   return (
-    <mesh
-      ref={meshRef}
-      position={initialPos} // 기존 initialPos 로직 유지
-      onPointerDown={(e) => {
-        e.stopPropagation();
-        // 부모에게 내가 선택되었다고 알림
-        if (onSelect) onSelect(meshRef.current, p.id); 
-        if (controlsRef?.current) controlsRef.current.enabled = false;
-      }}
-      onPointerUp={(e) => {
-        e.stopPropagation();
-        if (controlsRef?.current) controlsRef.current.enabled = true;
-        onDragEnd(p.id, meshRef.current);
-      }}
-    >
+      <mesh
+        ref={meshRef}
+        /* position={initialPos}  <-- ❌ 이 부분을 과감히 지웁니다! */
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          if (onSelect) onSelect(meshRef.current, p.id); 
+          if (controlsRef?.current) {
+            controlsRef.current.enabled = false; // 👈 이동 중에는 회전 금지
+          }
+        }}
+        onPointerUp={(e) => {
+          e.stopPropagation();
+          if (controlsRef?.current) {
+            controlsRef.current.enabled = true; // 👈 손 떼면 즉시 회전 허용
+          }
+          if (onDragEnd) onDragEnd(p.id, meshRef.current);
+        }}
+      >
+
       <boxGeometry args={[p.w * SCALE, p.h * SCALE, p.d * SCALE]} />
       <meshStandardMaterial 
         color={p._overflow ? "#ff5252" : colors[colorIndex]} 
@@ -513,17 +520,41 @@ export default function TruckLoad3D({ result }) {
   // TruckLoad3D 내부
   const [selectedMesh, setSelectedMesh] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
+  
 
   // 📍 선택 함수 (아이디와 메쉬를 동시에 저장)
   const handleSelect = useCallback((mesh, id) => {
+    if (!mesh) return;
     setSelectedMesh(mesh);
     setSelectedId(id);
+    // 절대 여기서 target._overflow를 건드리지 마세요!
   }, []);
 
   const btnStyle = {
     width: 50, height: 50, fontSize: 20, cursor: "pointer",
     backgroundColor: "rgba(255,255,255,0.9)", border: "none", borderRadius: 8
   };
+  // 📍 배경 클릭 시 선택 해제 및 컨트롤 복구 로직 강화
+  const handleMissed = useCallback(() => {
+    setSelectedMesh(null);
+    setSelectedId(null);
+    if (controlsRef.current) {
+      controlsRef.current.enabled = true; // 👈 회전 막힘 방지 핵심!
+    }
+  }, []);
+  // 📍 조이스틱 버튼 스타일 (더 깔끔하게)
+  const btnBaseStyle = {
+    width: "42px", height: "42px",
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
+    border: "1px solid #ddd",
+    borderRadius: "8px",
+    fontSize: "18px",
+    cursor: "pointer",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    boxShadow: "0 2px 4px rgba(0,0,0,0.1)",
+    transition: "all 0.1s"
+  };
+
 
   // 트럭을 먼저 불러온 뒤
   const trucks = useMemo(() => {
@@ -693,45 +724,39 @@ export default function TruckLoad3D({ result }) {
   }, [scene]);
 
   // 버튼 클릭 시 상자 이동 함수
+  // 📍 2. moveBox: 이동과 판정을 동시에 수행
   const moveBox = (direction) => {
     if (!selectedMesh || !selectedId) return;
-    const STEP = 10 * SCALE; 
+    const STEP = 20 * SCALE; 
 
-    // 📍 화면 기준 좌표 보정
-    // Up/Down: 화면의 앞뒤 (Z축)
-    // Left/Right: 화면의 좌우 (X축)
-    if (direction === 'up')    selectedMesh.position.z -= STEP; // 화면 안쪽으로
-    if (direction === 'down')  selectedMesh.position.z += STEP; // 내 쪽으로
-    if (direction === 'left')  selectedMesh.position.x -= STEP; // 왼쪽으로
-    if (direction === 'right') selectedMesh.position.x += STEP; // 오른쪽으로
+    // 방향 보정 (트럭이 -90도 회전되어 있으므로)
+    // 화면 위(Up) -> 트럭 앞(X+), 화면 아래(Down) -> 트럭 뒤(X-)
+    // 화면 왼쪽(Left) -> 트럭 왼쪽(Z-), 화면 오른쪽(Right) -> 트럭 오른쪽(Z+)
+    if (direction === 'up')    selectedMesh.position.x += STEP; 
+    if (direction === 'down')  selectedMesh.position.x -= STEP;
+    if (direction === 'left')  selectedMesh.position.z -= STEP;
+    if (direction === 'right') selectedMesh.position.z += STEP;
+    // 층수 조절 추가 (3-1번 문제 해결용)
+    if (direction === 'pageUp')   selectedMesh.position.y += STEP; 
+    if (direction === 'pageDown') selectedMesh.position.y -= STEP;
 
-    // 📍 실시간 판정 (트럭 회전 -90도 기준)
+    // 실시간 판정
     scene.trucks.forEach(tw => {
       const target = tw.placements.find(p => p.id === selectedId);
       if (target) {
+        const { x, z } = selectedMesh.position;
         const tr = tw.truck;
-        const preset = tw.preset;
+        const pr = tw.preset;
 
-        // 트럭이 -90도 회전했으므로:
-        // 트럭의 너비(W)는 로컬 X축 판정
-        // 트럭의 길이(D)는 로컬 Z축 판정
-        const halfW = (tr.w * SCALE) / 2;
-        const halfD = (tr.d * SCALE) / 2;
-        
-        // 적재함 중심점 (트럭 쉘 모델링 기준)
-        const bedCenterZ = (preset.cabD + tr.d / 2) * SCALE;
-        const bedCenterX = (tr.w / 2) * SCALE;
+        // 트럭 로컬 범위 내에 있는지 확인
+        const isInX = x >= pr.cabD * SCALE && x <= (pr.cabD + tr.d) * SCALE;
+        const isInZ = Math.abs(z) <= (tr.w / 2) * SCALE;
 
-        // 현재 메쉬 위치와 적재함 중심 비교
-        const isInW = Math.abs(selectedMesh.position.x - bedCenterX) <= halfW;
-        const isInD = Math.abs(selectedMesh.position.z - bedCenterZ) <= halfD;
-        
-        // 상태 업데이트
-        target._overflow = !(isInW && isInD);
+        target._overflow = !(isInX && isInZ);
       }
     });
 
-    checkTruckPlacement(); 
+    checkTruckPlacement(); // 전광판 갱신
   };
 
   // 실시간으로 미적재 합산
@@ -770,7 +795,7 @@ export default function TruckLoad3D({ result }) {
 
 
   return (
-    <div style={{ width: "100%", aspectRatio: "16 / 9", maxHeight: 320, minHeight: 220, borderRadius: 12, overflow: "hidden", background: "#81d4fa", position: "relative" }}>
+    <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 9", maxHeight: 320, minHeight: 220, borderRadius: 12, overflow: "hidden", background: "#81d4fa", position: "relative" }}>
       
       {/* ⚠️ 트럭에 못 실은 짐 안내 (기존 유지) */}
       {scene.overflowTotal > 0 && (
@@ -780,16 +805,32 @@ export default function TruckLoad3D({ result }) {
       )}
 
       {/* 🕹️ 인형뽑기 컨트롤러 버튼 (Canvas 바깥에 배치) */}
-      {selectedMesh && (
-        <div style={{ position: "absolute", bottom: 15, left: "50%", transform: "translateX(-50%)", display: "grid", gridTemplateColumns: "repeat(3, 46px)", gap: "5px", zIndex: 100 }}>
-          <div /> <button onClick={() => moveBox('up')} style={btnStyle}>▲</button> <div />
-          <button onClick={() => moveBox('left')} style={btnStyle}>◀</button>
-          <button onClick={() => moveBox('down')} style={btnStyle}>▼</button>
-          <button onClick={() => moveBox('right')} style={btnStyle}>▶</button>
+      {selectedId && (
+        <div style={{ 
+          position: "absolute", bottom: "15px", left: "15px", // 👈 좌측 하단으로 이동
+          zIndex: 1000,
+          display: "flex", gap: "10px", alignItems: "flex-end",
+          backgroundColor: "rgba(0,0,0,0.05)", padding: "10px", borderRadius: "15px"
+        }}>
+          {/* 수평/수직 이동 패드 */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 42px)", gap: "4px" }}>
+            <div /> 
+            <button onClick={() => moveBox('up')} style={btnBaseStyle}>▲</button> 
+            <div />
+            <button onClick={() => moveBox('left')} style={btnBaseStyle}>◀</button>
+            <button onClick={() => moveBox('down')} style={btnBaseStyle}>▼</button>
+            <button onClick={() => moveBox('right')} style={btnBaseStyle}>▶</button>
+          </div>
+
+          {/* 높이 조절 패드 (따로 분리해서 덜 헷갈리게) */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+            <button onClick={() => moveBox('pageUp')} style={{...btnBaseStyle, color: "#2196f3"}}>H▲</button>
+            <button onClick={() => moveBox('pageDown')} style={{...btnBaseStyle, color: "#2196f3"}}>H▼</button>
+          </div>
         </div>
       )}
 
-      <Canvas shadows camera={{ fov: 40, near: 0.5, far: 4000, position: [30, 20, 30] }} onPointerMissed={() =>{setSelectedMesh(null); setSelectedId(null);}}>
+      <Canvas shadows camera={{ fov: 40, near: 0.5, far: 4000, position: [30, 20, 30] }} onPointerMissed={handleMissed}>
         <CameraPreset controlsRef={controlsRef} target={cameraTarget} offset={[2.4, 3.2, 8.5]} onceKey={`${result?.estimate_id ?? "x"}-v3`} />
         <Sky sunPosition={[100, 50, 50]} turbidity={0.2} rayleigh={0.15} />
         <ambientLight intensity={0.8} />
@@ -817,8 +858,8 @@ export default function TruckLoad3D({ result }) {
 
         {/* 나머지 짐들 */}
         {scene.globalRemainderPlacements.length > 0 && scene.trucks[0] && (() => {
-  const tr0 = scene.trucks[0].truck;
-  const preset0 = scene.trucks[0].preset;
+          const tr0 = scene.trucks[0].truck;
+          const preset0 = scene.trucks[0].preset;
   
           return (
             <group 
@@ -830,10 +871,11 @@ export default function TruckLoad3D({ result }) {
                   key={`GLOBAL-${p.id}`}
                   p={p}
                   startY={startY}
+                  isSelected={selectedId === p.id}
                   onSelect={setSelectedMesh}
                   onDragEnd={checkTruckPlacement}
                   controlsRef={controlsRef}
-                  // 📍 위치 계산을 위한 props 추가 (이게 빠져있었네요!)
+                  // 위치 계산을 위한 props 추가 (이게 빠져있었네요!)
                   zOffsetCm={preset0.cabD + preset0.bodyPaddingD / 2}
                   yOffsetCm={preset0.chassisH}
                   xOffsetCm={preset0.bodyPaddingW / 2}
