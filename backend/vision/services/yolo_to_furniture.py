@@ -47,6 +47,6 @@ def map_to_furniture(yolo_class_id: int) -> Optional[Furniture]:
 
 def invalidate_furniture_cache() -> None:
   """
-  Furniture 데이터가 바뀌었을 때(관리자 수정/CSV 재로드 등) 캐시를 비우고 싶으면 호출.
+  Furniture 데이터가 바뀌었을 때(관리자 수정/CSV 재로드 등) 캐시를 비우고 싶으면 호출
   """
   _build_yolo_id_map.cache_clear()
