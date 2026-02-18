@@ -10,8 +10,6 @@ try:
 except ImportError:
   YOLO = None
 
-
-
 # 운영 서버 주의!
 # Gunicorn 멀티프로세스(worker>1)에서는 각 worker마다 모델이 로딩되어 GPU 메모리를 중복 사용하게 됨.
 # GPU 서버에서는 workers=1로 실행하여 모델 1개만 유지해야 함.
