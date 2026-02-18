@@ -1,7 +1,7 @@
 import os
 import tempfile
 from contextlib import contextmanager
-//
+
 @contextmanager
 def get_infer_path(image_fieldfile):
   """
