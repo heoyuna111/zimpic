@@ -11,8 +11,6 @@ from .file_path_utils import get_infer_path
 from .model_inference import run_vision_inference
 from .yolo_to_furniture import map_to_furniture
 
-
-
 def _build_image_url(request, vision_image: VisionImage) -> str:
   """
   request가 있을 때 절대 URL 생성
@@ -79,11 +77,10 @@ def process_rooms_upload(
 
   # json rooms 하나씩 읽기
   for room in rooms:
-
-    # ====================================
+    
     # 1. rooms + files를 요청 받아서
     #    VisionImage DB저장
-    # ====================================
+
     room_type = room.get("room_type")
     file_index = room.get("file_index")
     sort_order = room.get("sort_order", 0)
@@ -117,19 +114,15 @@ def process_rooms_upload(
     image_url = _build_image_url(request, vision_image)
 
 
-
-    # ====================================
     # 2. 모델 추론
-    # ====================================
+
     with get_infer_path(vision_image.image) as infer_path:
       detections = run_vision_inference(infer_path)
 
 
-
-    # ====================================
     # 3. YOLO결과 + 가구 정보
     #    VisionDetection 저장 및 응답
-    # ====================================
+
     resp_dets: List[Dict[str, Any]] = []
 
     # yolo결과 하나씩 꺼내기
