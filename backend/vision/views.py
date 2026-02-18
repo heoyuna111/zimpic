@@ -10,8 +10,6 @@ from drf_yasg import openapi
 
 from vision.services.pipeline import process_rooms_upload
 
-
-
 class VisionUploadAPIView(APIView):
   parser_classes = [MultiPartParser, FormParser]
 
