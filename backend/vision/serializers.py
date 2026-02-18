@@ -1,7 +1,6 @@
 from rest_framework import serializers
 from .models import VisionImage, VisionDetection
 
-
 class VisionDetectionInputSerializer(serializers.ModelSerializer):
   class Meta:
     model = VisionDetection
