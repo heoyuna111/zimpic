@@ -1,6 +1,5 @@
 # ZIMPIC
-
-
+---
 ## 담당 역할
 
 #### Backend
@@ -28,7 +27,7 @@
 ## 🏗 시스템 아키텍처
 
 <p align="center">
-  <img src="./docs/짐픽_아키텍처.PNG" width="700"/>
+  <img src="./docs/짐픽_아키텍처.PNG" width="900"/>
 </p>
 
 ---
