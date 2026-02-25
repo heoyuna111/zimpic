@@ -14,7 +14,7 @@
 
 ---
 
-## 🛠 기술 스택
+## 기술 스택
 
 - Back-end: Django, Django REST Framework, Django Admin
 - Front-end: React, Axios, Three.js, Bootstrap
@@ -24,7 +24,7 @@
 
 ---
 
-## 🏗 시스템 아키텍처
+## 시스템 아키텍처
 
 <p align="center">
   <img src="./docs/짐픽_아키텍처.PNG" width="900"/>
@@ -32,7 +32,7 @@
 
 ---
 
-## 📌 기능 설명
+## 기능 설명
 
 방 사진만 촬영하면 사진 속 가구를 분석하여 이사용응 자동으로 예측하는 서비스를 목표로 기획하였습니다.
 
