@@ -29,19 +29,13 @@
 ## 🏗 시스템 아키텍처
 
 <p align="center">
-  <img src="./images/architecture.png" width="700"/>
+  <img src="./docs/짐픽_아키텍처.png" width="700"/>
 </p>
 
 ---
 
 ## 📌 기능 설명
 
-(간단한 주요 기능 목록)
+방 사진만 촬영하면 사진 속 가구를 분석하여 이사용응 자동으로 예측하는 서비스를 목표로 기획하였습니다.
 
----
 
-## 📌 Use Case
-
-<p align="center">
-  <img src="./images/usecase.png" width="700"/>
-</p>
