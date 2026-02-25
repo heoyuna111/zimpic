@@ -36,4 +36,11 @@
 
 방 사진만 촬영하면 사진 속 가구를 분석하여 이사용응 자동으로 예측하는 서비스를 목표로 기획하였습니다.
 
+---
+
+## 유튜브 링크
+
+https://youtu.be/mtyF1Sjbees?si=WjrayIzJAr1kcMC4
+
+
 
